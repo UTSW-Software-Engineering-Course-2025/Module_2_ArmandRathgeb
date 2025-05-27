@@ -94,6 +94,14 @@ class SaveImages(Callback):
         self.n_generated_images = n_generated_images
         self.n_latent_dims = n_latent_dims
         self.model = model
+
+    @property
+    def model(self):
+        return self._model
+
+    @model.setter
+    def model(self, value):
+        self._model = value
         
     def on_epoch_end(self, epoch, logs=None):
         """Overrides the on_epoch_end method of the superclass Callback. Here,

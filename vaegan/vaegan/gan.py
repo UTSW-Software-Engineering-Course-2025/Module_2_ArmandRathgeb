@@ -44,7 +44,7 @@ class Generator(tf.keras.Model):
                                   self.image_shape[1] // (2 ** n_strided_layers),
                                   n_first_layer_filters)
         
-        dense_neurons = np.product(first_conv_input_shape)
+        dense_neurons = np.prod(first_conv_input_shape)
         
         self.dense = tkl.Dense(dense_neurons, name='dense')
         self.relu_dense = tkl.LeakyReLU(name='relu_dense')
@@ -220,21 +220,22 @@ class GAN(tf.keras.Model):
         # ===================================  
         # 
         # 1. Call base class constructor      
-
+        super().__init__(name=name, **kwargs)
         
         # 2. store the 4 necessary attributes provided to the constructor. 
         #    Use as your attribute names, the same names as in the constructor input arguments
-
-
-
+        self.n_latent_dims    = n_latent_dims
+        self.image_shape      = image_shape
+        self.generator_lr     = generator_lr
+        self.discriminator_lr = discriminator_lr
 
         # 3. Use the has-a mechanism to contain two construct necessary instances and store them in self.generator and self.discriminator       
-
-
+        self.generator     = Generator(image_shape)
+        self.discriminator = Discriminator()
 
         # 4. Use binary cross-entropy for the discrminator's classification loss. Store this in self.loss_bce
         # Look up the keras function losses.BinaryCrossentropy. Give it a suitable name.
-
+        self.loss_bce = tf.keras.losses.BinaryCrossentropy(name='bce')
 
         # 5. Create a custom metric objects to track the running means of each loss.
         # The values will be printed in the progress bar with each training
@@ -246,8 +247,8 @@ class GAN(tf.keras.Model):
 
         # 6. Create Adam optimizers to do the gradient descent 
         #    Store them in self.optimizer_gen and self.optimizer_disc
-
-
+        self.optimizer_gen  = tf.keras.optimizers.Adam(learning_rate=generator_lr)
+        self.optimizer_disc = tf.keras.optimizers.Adam(learning_rate=discriminator_lr)
 
         print(f"Loaded version: {__name__}")
 
@@ -263,12 +264,8 @@ class GAN(tf.keras.Model):
     #  4. To generate fake images pass that sample through the forward pass of the generator, but also tell it whether we are in training mode or not, (from the GAN forward pass method input argument).
     #  5. Return the generated fake images.             
 
-
-
-
-
-
-
+    def call(self, inputs, training=None):
+        pass 
 
     @property
     def metrics(self):
@@ -278,6 +275,8 @@ class GAN(tf.keras.Model):
         return [self.loss_gen_tracker,
                 self.loss_disc_tracker]
     
+    def training_step(self, data):
+        pass
     # ===== ToImplement   Exercise5e ====
     # ===================================
     # Implement the training step method, since GANs require specialized training.
