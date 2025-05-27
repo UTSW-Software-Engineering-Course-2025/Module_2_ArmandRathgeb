@@ -34,10 +34,7 @@ def sample_from_normal(dist_mean, dist_logvar):
     # 
 
     # ========================   
-    if dist_mean.shape.is_fully_defined():
-        return tf.random.normal(dist_mean.shape) * tf.math.exp(.5*dist_logvar) + dist_mean
-    else:
-        return dist_mean
+    return tf.random.normal(shape=tf.shape(dist_mean)) * tf.math.exp(.5*dist_logvar) + dist_mean
 
 def kl_divergence(dist_mean, dist_logvar):
     """Compute the closed-form KL Divergence between a given distribution and a 
@@ -65,7 +62,7 @@ def kl_divergence(dist_mean, dist_logvar):
 
 
     # ========================    
-    elems = .5 * tf.math.reduce_sum(tf.math.exp(dist_logvar) + tf.math.pow(dist_mean, 2) - dist_logvar - 1, axis=0)
+    elems = .5 * tf.math.reduce_sum(tf.math.exp(dist_logvar) + tf.math.pow(dist_mean, 2) - dist_logvar - 1, axis=-1)
     divKL_AllSamples = tf.math.reduce_mean(elems)
     return divKL_AllSamples
 
@@ -516,22 +513,21 @@ class VAE(tf.keras.Model):
 
         # 8. Compute the gradients for each loss wrt their respectively model weights
         #    A) Use the gradient tape to compute the gradients for the encoder and store the results in grads_enc
-        grads_enc = tape.gradient(total_loss, self.encoder.trainable_weights)
+        grads_enc = tape.gradient(total_loss, self.encoder.trainable_variables)
 
         #    B) Use the gradient tape to compute the gradients for the dencoder and store the results in grads_dec
-        grads_dec = tape.gradient(total_loss, self.decoder.trainable_weights)
+        grads_dec = tape.gradient(total_loss, self.decoder.trainable_variables)
 
 
         # 9. Apply the gradient descent steps to each submodel. The optimizer
         # attribute is created when model.compile(optimizer) is called by the
         # user.
-        self.optimizer.build(self.trainable_weights)
-        #self.optimizer.build(self.decoder.trainable_weights)
+        self.optimizer.build(self.trainable_variables)
         # A) First apply the gradient to the encoder. use self.optimizer.apply_gradients()
-        self.optimizer.apply_gradients(zip(grads_enc, self.encoder.trainable_weights))
+        self.optimizer.apply_gradients(zip(grads_enc, self.encoder.trainable_variables))
 
         # B) Then apply the gradient to the decoder. use self.optimizer.apply_gradients()
-        self.optimizer.apply_gradients(zip(grads_dec, self.decoder.trainable_weights))
+        self.optimizer.apply_gradients(zip(grads_dec, self.decoder.trainable_variables))
         
         
         # [ 10. ] Update the running means of the losses
