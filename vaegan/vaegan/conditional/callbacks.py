@@ -39,7 +39,15 @@ class GenerateImagesConditional(Callback):
         self.example_labels = example_labels
         self.n_classes = example_labels.shape[1]
         self.class_names = class_names
-        
+
+    @property
+    def model(self):
+        return self._model
+
+    @model.setter
+    def model(self, value):
+        self._model = value
+ 
     def on_epoch_end(self, epoch, logs=None):
         """Overrides the on_epoch_end method of the superclass Callback. Here,
         we define what operations should be done, as the name implies, at the
@@ -123,6 +131,14 @@ class SaveImagesConditional(Callback):
         self.images_tensor = tf.convert_to_tensor(self.example_images, dtype=tf.float32)
         self.labels_tensor = tf.convert_to_tensor(self.example_labels, dtype=tf.float32)
         
+    @property
+    def model(self):
+        return self._model
+
+    @model.setter
+    def model(self, value):
+        self._model = value
+ 
     def on_epoch_end(self, epoch, logs=None):
         """Overrides the on_epoch_end method of the superclass Callback. Here,
         we define what operations should be done, as the name implies, at the
