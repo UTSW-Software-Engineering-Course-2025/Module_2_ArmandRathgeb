@@ -2,10 +2,52 @@ import tensorflow as tf
 import tensorflow.keras.layers as tkl
 import numpy as np
 
+def fParseActivationFunctions(lsActFuncs:list):
+    """ convert list of activation functions into (string, tf.nn.xxxx) pairs for layer naming
+    Note, original index of activations are preserved
+
+    Non-aliased activation functions supported:
+    - leaky_relu
+    - PReLU
+
+    Args:
+        lsActFuncs (list): list of activation functions to parse
+    
+    Returns: 
+        dictActivationFunctions (dict): dictionary of parsed activation functions
+            format: {0 : (`ActivationFunctionName`, `activationFunction`), ...}
+    """
+    idx = 0
+    dictActivationFunctions = {}
+    for f in lsActFuncs:
+        # If the activation function is passed in as a string, assume tf has alias
+        # i.e. lsActFunc = ['relu']
+        if isinstance(f, str):
+            dictActivationFunctions[idx] = (f, f)
+        # Check for non-string aliased activation functions
+        elif f == tf.nn.leaky_relu:
+            dictActivationFunctions[idx] = ('leaky_relu', f)
+        #elif f == tkl.PReLU:
+        #    dictActivationFunctions[idx] = ('PReLU', f)
+        # Error handling
+        else:
+            raise ValueError(f'You entered {f} which is not currently accepted as an activation function') 
+        idx += 1
+    return dictActivationFunctions
+
+
+
+
 
 class Generator(tf.keras.Model):
     
     def __init__(self,
+                 generator_conv_layer_units = [128,128],
+                 generator_conv_layer_kernel_size = [4,4],
+                 generator_conv_layer_strides = [(2,2), (2,2)],
+                 generator_conv_layer_activation_functions = [tf.nn.leaky_relu,tf.nn.leaky_relu],
+                 discriminator_dense_layer_units = [128],
+                 generator_dense_layer_units = [],
                  image_shape=(32, 32, 1),
                  name='generator',
                  **kwargs):
@@ -38,28 +80,37 @@ class Generator(tf.keras.Model):
             
         '''
         
-        n_first_layer_filters = 128 # Number of filters/channels in the input to first convolutional layer
-        n_strided_layers = 2
+        n_first_layer_filters = generator_conv_layer_units[-1] # Number of filters/channels in the input to first convolutional layer
+        n_strided_layers = sum([strides != (1,1) for strides in generator_conv_layer_strides])
         first_conv_input_shape = (self.image_shape[0] // (2 ** n_strided_layers),
                                   self.image_shape[1] // (2 ** n_strided_layers),
                                   n_first_layer_filters)
         
         dense_neurons = np.prod(first_conv_input_shape)
         
-        self.dense = tkl.Dense(dense_neurons, name='dense')
-        self.relu_dense = tkl.LeakyReLU(name='relu_dense')
-        # Reshape from 1D to 3D
-        self.reshape = tkl.Reshape(first_conv_input_shape, name='reshape')
-        # (d/4) x (d/4)
+        # Parse activation function lists for 
+        self.generator_conv_layer_activation_functions = fParseActivationFunctions(generator_conv_layer_activation_functions)
+        # Init empty container to hold layers
+        self.generator_layers = []
 
-        self.tconv0 = tkl.Conv2DTranspose(128, 4, strides=(2, 2), padding='same', name='conv0')
-        self.relu0 = tkl.LeakyReLU(name='relu0')
-        # (d/2) x (d/2)
-                
-        self.tconv1 = tkl.Conv2DTranspose(128, 4, strides=(2, 2), padding='same', name='conv1')
-        self.relu1 = tkl.LeakyReLU(name='relu1')
-        # d x d
-                
+        # Dense Layer blocks
+        # Fill layers in reverse so same list can be used for discriminator
+        for i in range(len(generator_dense_layer_units)-1, -1, -1):
+            self.generator_layers += [tkl.Dense(generator_dense_layer_units[i],name = f"dense{i}")]
+            self.generator_layers += [tkl.ReLU(name=f'relu{i}')]
+
+        # Reshape
+        self.generator_layers += [tkl.Dense(dense_neurons, name='dense_to_conv')]
+        self.generator_layers += [tkl.Activation(tf.nn.leaky_relu, name=f'leaky_relu_dense_to_conv')]
+        self.generator_layers += [tkl.Reshape(first_conv_input_shape, name='reshape')]
+        
+        # Conv layer blocks
+        # Fill layers in reverse so same list can be used for encoder
+        for i in range(len(generator_conv_layer_units)-1, -1, -1):
+            self.generator_layers += [tkl.Conv2DTranspose(generator_conv_layer_units[i], generator_conv_layer_kernel_size[i], padding = 'same', 
+                                       strides = generator_conv_layer_strides[i], name = f"tconv{i}")]
+            self.generator_layers += [tkl.Activation(self.generator_conv_layer_activation_functions[i][1],name=f'{self.generator_conv_layer_activation_functions[i][0]}{i}')]
+                                    
         # A final convolution layer with a sigmoid activation to produce the
         # output image. The number of filters should equal the number of color
         # channels in the image.
@@ -78,37 +129,14 @@ class Generator(tf.keras.Model):
         Returns:
             tensor: reconstructed image
         """                             
-        
-        
 
-        # First block: inputs --> dense  --> relu_dense --> reshape --> x
-        # 1. Use the self.dense() layer to process the latent vector representation which is stored in the variable, inputs and store the result in the variable, x.
-        # 2. Use transform x by applying the relu_dense() layer. Have it take in x from the previous step. Store the output again in x. This way we update x.  and learn a dense NN layer 
-        #     This learns a linear combination of the elements of the latent vector, inputs, and then applies a nonlinear relu activation function afterwards so that we learn interesting combinations. 
-        # 3. Use reshape() layer to make x into a 2D image sutable for the next block. Store the result in x. 
-        x = self.dense(inputs)
-        x = self.relu_dense(x)
-        x = self.reshape(x)
-        
-        # Second block: x --> tconv0 --> relu0 --> x
-        # 1. Use the tconv0() layer to perform a trasnsposed convolution on x so that we learn an expansion that constructs a slightly larger image with more detail. Store the result in x. 
-        # 2. Use the relu0() layer to apply a nonlinear relu activation to the transposed result from the previous step.
-        x = self.tconv0(x)
-        x = self.relu0(x)
-
-        # Third block: x --> tconv1 --> relu1 --> x
-        # 1. Use the tconv1() layer to perform a trasnsposed convolution on x so that we learn an expansion that constructs a slightly larger image with more detail. Store the result in x. 
-        # 2. Use the relu1() layer to apply a nonlinear relu activation to the transposed result from the previous step.
-        x = self.tconv1(x)
-        x = self.relu1(x)
-
-        # Fourth block: x --> conv_out --> sigmoid  --> x
-        # 1. Use the conv_out() layer to perform a convolution on x. Store the result in x. 
-        # 2. Use the sigmoid_out() layer to apply a sigmoid relu activation to the result from the previous step. Sigmoid values range from 0..1  which are readily mapped to the image intensities we aim to reconstruct.
+        x = inputs
+        for layer in self.generator_layers:
+            x = layer(x, training = training)
+  
         x = self.conv_out(x)
         x = self.sigmoid_out(x)
-
-
+        
         return x    
     
     def get_config(self):
@@ -127,6 +155,12 @@ class Generator(tf.keras.Model):
 
 class Discriminator(tf.keras.Model):
     def __init__(self, 
+                 discriminator_conv_layer_units = [32,64],
+                 discriminator_conv_layer_kernel_size = [4,4],
+                 discriminator_conv_layer_strides = [(1,1), (2,2)],
+                 discriminator_conv_layer_activation_functions = ['relu','relu'],
+                 discriminator_dense_layer_units = [],
+                 generator_dense_layer_units = [],
                  name='discriminator', 
                  **kwargs):
         """Discriminator for classifying real from fake images.
@@ -136,19 +170,30 @@ class Discriminator(tf.keras.Model):
         """        
         super(Discriminator, self).__init__(name=name, **kwargs)
         
-        # Define the layers
-        self.conv0 = tkl.Conv2D(32, 4, padding='same', name='conv0')
-        self.bn0 = tkl.BatchNormalization(name='bn0')
-        self.relu0 = tkl.ReLU(name='relu0')
+        # Parse activation function lists for 
+        self.discriminator_conv_layer_activation_functions = fParseActivationFunctions(discriminator_conv_layer_activation_functions)
+        self.discriminator_layers = []
+
+         # Conv layer blocks
+        for i in range( len(discriminator_conv_layer_units) ):
+            self.discriminator_layers += [tkl.Conv2D(discriminator_conv_layer_units[i], discriminator_conv_layer_kernel_size[i], padding = 'same', 
+                                       strides = discriminator_conv_layer_strides[i], name = f"conv{i}")]
+            self.discriminator_layers += [tkl.BatchNormalization(name=f'bn{i}')]
+            self.discriminator_layers += [tkl.Activation(self.discriminator_conv_layer_activation_functions[i][1],
+                                                         name=f'{self.discriminator_conv_layer_activation_functions[i][0]}{i}')]
+            
+        # Flatten 2D output into a vector, then apply dense layer(s)
+        self.discriminator_layers += [tkl.Flatten(name='flatten')]
         
-        self.conv1 = tkl.Conv2D(64, 4, strides=(2, 2), padding='same', name='conv1')
-        self.bn1 = tkl.BatchNormalization(name='bn1')
-        self.relu1 = tkl.ReLU(name='relu1')
-        
-        self.flatten = tkl.Flatten(name='flatten')
-        
+        # Dense Layer blocks
+        for i in range(len(discriminator_dense_layer_units)):
+            self.discriminator_layers += [tkl.Dense(discriminator_dense_layer_units[i],name = f"dense{i}")]
+
+        # Classification output layer
         self.dense_out = tkl.Dense(1, name='dense_out')
         self.sigmoid_out = tkl.Activation('sigmoid', name='sigmoid_out')
+        #self.discriminator_layers += [tkl.Dense(1, name = f"dense_out", activation = 'sigmoid')]
+
         
     def call(self, inputs, training=None):
         """Define the forward pass, which produces a predicted classification.
@@ -161,20 +206,13 @@ class Discriminator(tf.keras.Model):
         Returns:
             tensor: predicted classification
         """        
-        x = self.conv0(inputs)
-        x = self.bn0(x, training=training)
-        x = self.relu0(x)
-        
-        x = self.conv1(x)
-        x = self.bn1(x, training=training)
-        x = self.relu1(x)
-        
-        x = self.flatten(x)
-        
+        x = inputs
+        for layer in self.discriminator_layers:
+            x = layer(x, training = training)
         y = self.dense_out(x)
         y = self.sigmoid_out(y)
-        
         return y
+        
             
     def get_config(self):
         # To allow saving and loading of a custom model, we need to implement a
@@ -197,6 +235,8 @@ class GAN(tf.keras.Model):
     def __init__(self, 
                  n_latent_dims=128, 
                  image_shape=(32, 32, 1),
+                 generator_params = {},
+                 discriminator_params = {},
                  generator_lr=0.0001,
                  discriminator_lr=0.00001,
                  name='gan', 
@@ -224,32 +264,30 @@ class GAN(tf.keras.Model):
         
         # 2. store the 4 necessary attributes provided to the constructor. 
         #    Use as your attribute names, the same names as in the constructor input arguments
-        self.n_latent_dims    = n_latent_dims
-        self.image_shape      = image_shape
-        self.generator_lr     = generator_lr
+        self.n_latent_dims = n_latent_dims
+        self.image_shape = image_shape
+        self.generator_lr = generator_lr
         self.discriminator_lr = discriminator_lr
-
+        
         # 3. Use the has-a mechanism to contain two construct necessary instances and store them in self.generator and self.discriminator       
-        self.generator     = Generator(image_shape)
-        self.discriminator = Discriminator()
-
+        self.generator = Generator(**generator_params)
+        self.discriminator = Discriminator(**discriminator_params)
+                
         # 4. Use binary cross-entropy for the discrminator's classification loss. Store this in self.loss_bce
         # Look up the keras function losses.BinaryCrossentropy. Give it a suitable name.
-        self.loss_bce = tf.keras.losses.BinaryCrossentropy(name='loss_bce')
-
+        self.loss_bce = tf.keras.losses.BinaryCrossentropy(name='bce')
+        
         # 5. Create a custom metric objects to track the running means of each loss.
         # The values will be printed in the progress bar with each training
         # iteration.
         # store them in self.loss_gen_tracker and self.loss_disc_tracker.
         # Find a suitable metric from tf.keras.metrics
-        self.loss_disc_tracker = tf.keras.metrics.Mean(name="disc_loss")
-        self.loss_gen_tracker = tf.keras.metrics.Mean(name="gen_loss")
-
-
-
+        self.loss_gen_tracker = tf.keras.metrics.Mean(name='gen_loss')
+        self.loss_disc_tracker = tf.keras.metrics.Mean(name='disc_loss')
+        
         # 6. Create Adam optimizers to do the gradient descent 
         #    Store them in self.optimizer_gen and self.optimizer_disc
-        self.optimizer_gen  = tf.keras.optimizers.Adam(learning_rate=generator_lr)
+        self.optimizer_gen = tf.keras.optimizers.Adam(learning_rate=generator_lr)
         self.optimizer_disc = tf.keras.optimizers.Adam(learning_rate=discriminator_lr)
 
         print(f"Loaded version: {__name__}")
@@ -257,7 +295,7 @@ class GAN(tf.keras.Model):
     # ===== ToImplement   Exercise5d ====
     # ===================================
     # Implement the GAN forward pass method
-    #  0. Write the def ... statement and then Write an appropriate doc string
+    #  0. Write an appropriate doc string
     #  1. there should be 3 arguments to this method. 
     #     one of them is inputs  which contains the data to do the forward pass upon.
     #  2. Set n =  the number of samples by selecting the appropriate dimension using tf.shape
@@ -265,18 +303,16 @@ class GAN(tf.keras.Model):
     #     you will want n x n_latent_dims  samples from this normal distn.
     #  4. To generate fake images pass that sample through the forward pass of the generator, but also tell it whether we are in training mode or not, (from the GAN forward pass method input argument).
     #  5. Return the generated fake images.             
-
     def call(self, inputs, training=None):
-        """Forward pass for GAN
-        Args:
-            inputs: tensor of input images to generate from
-            training: determines whether the model is training or testing.
-        """
-        n = tf.shape(inputs)[0]
-        z = tf.random.normal((n, self.n_latent_dims))
-        fakes = self.generator(z, training=training)
-        return fakes
 
+
+        n_samples = tf.shape(inputs)[0]
+        
+        z_random = tf.random.normal((n_samples, self.n_latent_dims))
+        images_fake = self.generator(z_random, training=training)
+        
+        return images_fake
+        
     @property
     def metrics(self):
         '''
@@ -285,19 +321,25 @@ class GAN(tf.keras.Model):
         return [self.loss_gen_tracker,
                 self.loss_disc_tracker]
     
-    def train_step(self, images_real):
-        """Defines a single training iteration
-        Args:
-            images_real: a tensor containing the current training batch
-
-        Returns:
-            losses: a dict containing the current loss values
-        """
     # ===== ToImplement   Exercise5e ====
     # ===================================
     # Implement the training step method, since GANs require specialized training.
-    # 0. Write the def... statement and then write an appropriate doc string 
+    # 0. Write an appropriate doc string 
     # 1. there are two input arguments. One of them is the tensor, images_real, with the current minibatch to train upon.
+    def train_step(self, data):
+        """Defines a single training iteration, including the forward pass,
+        computation of losses, backpropagation, and weight updates.
+
+        Args:
+            data (tensor): Input images.
+
+        Returns:
+            dict: Loss values.
+        """        
+
+      
+        images_real = data
+        
         # Part 1: Train the discriminator
         # 2. Generate images from random latent vectors.
         #  2a) Set n =  the number of samples by selecting the appropriate dimension using tf.shape
@@ -307,24 +349,23 @@ class GAN(tf.keras.Model):
         #     (images_fake) using the sample from the normal distn you just created in the previous substep, 2b). 
         #     Also specify that training=False 
         # 
-        n = tf.shape(images_real)[0]
-        z = tf.random.normal((n, self.n_latent_dims))
-        images_fake = self.generator(z, training=False)
-
+        n_samples = tf.shape(images_real)[0]
+        z_random = tf.random.normal((n_samples, self.n_latent_dims))
+        images_fake = self.generator(z_random, training=False)
+        
         # 3. Create label vectors varaible, labels_real, containing ones
         #   Also create a label vector, labels_fake, containing zeros.
         #    e.g. hint for part you may want to use tf.ones
-        labels_real = tf.ones(n)
-        labels_fake = tf.zeros(n)
+        labels_real = tf.ones((n_samples, 1))
+        labels_fake = tf.zeros((n_samples, 1))
 
         # 4. Concatenate real and fake images into new variable,  images_disc. Hint: See tf.concat
         #    Also concatenate real and fake labels into new varaible, labels_disc.
-        images_disc = tf.concat((images_real, images_fake), 0)
-        labels_disc = tf.concat((labels_real, labels_fake), 0)
-
+        images_disc = tf.concat([images_real, images_fake], axis=0)
+        labels_disc = tf.concat([labels_real, labels_fake], axis=0)
+        
         # 5. start a GraidentTape with default arguments
-        with tf.GradientTape() as dtape:
-
+        with tf.GradientTape() as gt:
             # 6. indented: Predict with the discriminator's forward pass via self.discriminator()
             #    store the predictions in variable, labels_pred 
             #    Specify that now, training=True
@@ -333,28 +374,25 @@ class GAN(tf.keras.Model):
             # 7. indented: Compute discriminator classification loss
             #    in a new variable, disc_loss, compute the binary cross entropy loss using one of the attributes of self
             disc_loss = self.loss_bce(labels_disc, labels_pred)
-
                                    
         # 8. NOT indented: Compute the gradient of the lost wrt the discriminator weights
         #  in a new variable, grads_disc store the gradients of disc_loss with respect to the discriminator's trainable weights  
-        grads_disc = dtape.gradient(disc_loss, self.discriminator.trainable_variables)
+        grads_disc = gt.gradient(disc_loss, self.discriminator.trainable_weights)
         
         # 9. Apply the weight updates
         #    use self.optimizer_disc to apply the weight updates. Hint: use zip
-        self.optimizer_disc.apply_gradients(zip(grads_disc, self.discriminator.trainable_variables))
+        self.optimizer_disc.apply_gradients(zip(grads_disc, self.discriminator.trainable_weights))           
         
         # Part 2: Train the generator
         # 10. start a GraidentTape with default arguments. Use a different tape context variable than used above.           
-        with tf.GradientTape() as gtape:
-
+        with tf.GradientTape() as gt2:
             # [ 11. indented: ] Generate images from random latent vectors. Generate twice as many
             # images as the batch size so that the generator sees as many
             # samples as the discriminator did. 
             #  To help you along, we give you this part 
-            n = tf.shape(images_real)[0] * 2
-            z = tf.random.normal(shape=(n, self.n_latent_dims))
-            images_fake = self.generator(z, training=True)
-
+            z_random = tf.random.normal((n_samples * 2, self.n_latent_dims))
+            images_fake = self.generator(z_random, training=True)
+                        
             # 12. indented: Predict with the discriminator's forward pass the labels for images_fake
             #     set training=False. Store the prediction results in new variable, labels_pred
             labels_pred = self.discriminator(images_fake, training=False)
@@ -363,24 +401,24 @@ class GAN(tf.keras.Model):
             # calculate the loss between these predictions and the "real image" labels
             # 13a)  build a new variable, labels_gen, which is a vector of ones of size 2*n_samples x 1
             # 13b)  build a new variable, gen_loss containing the binary cross entropy loss.
-            labels_gen = tf.ones(n)
-            gen_loss   = self.loss_bce(labels_gen, labels_pred)
-
+            labels_gen = tf.ones((2 * n_samples, 1))
+            gen_loss = self.loss_bce(labels_gen, labels_pred)
+            
         # 14. NOT indented: compute the gradient of the lost wrt the generator weights
         #  in a new variable, grads_gen store the gradients of gen_loss with respect to the generator's trainable weights         
-        grads_gen = gtape.gradient(gen_loss, self.generator.trainable_variables)
+        grads_gen = gt2.gradient(gen_loss, self.generator.trainable_weights)
         
         # 15. Apply the weight updates
         #    use self.optimizer_gen to apply the weight updates. 
-        self.optimizer_gen.apply_gradients(zip(grads_gen, self.generator.trainable_variables))
+        self.optimizer_gen.apply_gradients(zip(grads_gen, self.generator.trainable_weights))                
         
         # 16. Update the running means of the losses including loss_gen_tracker and loss_disc_tracker
         self.loss_gen_tracker.update_state(gen_loss)
         self.loss_disc_tracker.update_state(disc_loss)
-
+        
         # [ 17. ] Get the current values of these running means as a dict. These values
         # will be printed in the progress bar.
-        # To help you along this is given. Just uncomment the "##" lines below
+        # To help you along this is given.
         dictLosses = {loss.name: loss.result() for loss in self.metrics}
 
         # return the dictionary of losses
@@ -406,9 +444,15 @@ class MultiTaskDiscriminator(Discriminator):
     
     def __init__(self, 
                  n_classes,
+                 discriminator_conv_layer_units = [32,64],
+                 discriminator_conv_layer_kernel_size = [4,4],
+                 discriminator_conv_layer_strides = [(1,1), (2,2)],
+                 discriminator_conv_layer_activation_functions = ['relu','relu'],
+                 discriminator_dense_layer_units = [],
+                 generator_dense_layer_units = [],
                  name='discriminator', 
                  **kwargs):
-        """Discriminator for classifying real from fake/reconstructed images.  
+        """Discriminator for classifying real from fake/reconstructed images.
 
         Args:
             name (str, optional): Model name. Defaults to 'discriminator'.
@@ -418,26 +462,24 @@ class MultiTaskDiscriminator(Discriminator):
         self.n_classes = n_classes
         
         # Define the layers for the Discriminator module that we will later link together in the call() method.
+                # Parse activation function lists for 
+        self.discriminator_conv_layer_activation_functions = fParseActivationFunctions(discriminator_conv_layer_activation_functions)
+        self.discriminator_layers = []
 
-        # Layers needed for first block: 
-        # 1. self.conv0 ... define a 2D convolution layer via the Conv2D() function with 32 filters, each 4x4, padding same, name conv0
-        # 2. self.bn0 ... define a batch normalization layer via BatchNormalization() with the name bn0
-        # 3. self.relu0 ... define a RELU layer via ReLu() with the name relu0
-        self.conv0 = tkl.Conv2D(32, 4, padding='same', name='conv0')
-        self.bn0 = tkl.BatchNormalization(name='bn0')
-        self.relu0 = tkl.ReLU(name='relu0')
+         # Conv layer blocks
+        for i in range( len(discriminator_conv_layer_units) ):
+            self.discriminator_layers += [tkl.Conv2D(discriminator_conv_layer_units[i], discriminator_conv_layer_kernel_size[i], padding = 'same', 
+                                       strides = discriminator_conv_layer_strides[i], name = f"conv{i}")]
+            self.discriminator_layers += [tkl.BatchNormalization(name=f'bn{i}')]
+            self.discriminator_layers += [tkl.Activation(self.discriminator_conv_layer_activation_functions[i][1],
+                                                         name=f'{self.discriminator_conv_layer_activation_functions[i][0]}{i}')]
+            
+        # Flatten 2D output into a vector, then apply dense layer(s)
+        self.discriminator_layers += [tkl.Flatten(name='flatten')]
         
-        # Layers needed for second block: 
-        # 1. self.conv1 ... define a 2D convolution layer via the Conv2D() function with 64 filters, each 4x4, 2x2 striding, padding same, name conv1
-        # 2. self.bn1 ... define a batch normalization layer via BatchNormalization() with the name bn1
-        # 3. self.relu1 ... define a RELU layer via ReLU() with the name relu1        
-        self.conv1 = tkl.Conv2D(64, 4, strides=(2, 2), padding='same', name='conv1')
-        self.bn1 = tkl.BatchNormalization(name='bn1')
-        self.relu1 = tkl.ReLU(name='relu1')
-
-        # Layers needed for third block: 
-        # 1. self.flatten ... define a flattening layer via Flatten() with the name flatten
-        self.flatten = tkl.Flatten(name='flatten')
+        # Dense Layer blocks
+        for i in range(len(discriminator_dense_layer_units)):
+            self.discriminator_layers += [tkl.Dense(discriminator_dense_layer_units[i],name = f"dense{i}")]
 
         # Layers needed for block 4a: this predicts whether the image is real or fake
         # 1. self.dense_real ... define a dense layer via the Dense() function with 1 neauron and the name dense_real
@@ -465,27 +507,9 @@ class MultiTaskDiscriminator(Discriminator):
         Returns:
             tensor: predicted classification
         """        
-
-   
-        # First block: images & training labels --> --> convolution --> batch normalize  --> relu  --> x
-        # 1. Use the self.conv0() layer to extract image features from the images in the variable, inputs. Store the output in x.
-        # 2. Use the self.bn0() layer to normalize the next mini batch of training images x and the training labels in the variable training. Store the output in x.
-        # 3. Then transform x by applying the relu0() layer. Have it take in x from the previous step. Store the output again in x. This way we update x  and learn a dense NN layer 
-        x = self.conv0(inputs)
-        x = self.bn0(x, training=training)
-        x = self.relu0(x)
-        
-        # Second block: x --> conv1 --> bn1 --> relu1  --> x
-        # 1. Use the self.conv1() layer to extract image features from x that are predictive of authenticity (real vs fake) and class label. Store the output in x
-        # 2. Use the self.bn1 layer to normalzie the images in x and training labels in training. Store the output in x
-        # 3. Use the relu1 layer to transform x by applying the RELU activation to x.  Store the output again in x.
-        x = self.conv1(x)
-        x = self.bn1(x, training=training)
-        x = self.relu1(x)
-        
-        # Third block: x --> flatten --> x
-        # 1. Use the flatten layer to flattend the tensor of image features in x to a vector.  Store the output in x
-        x = self.flatten(x)
+        x = inputs
+        for layer in self.discriminator_layers:
+            x = layer(x, training = training)
         
         # Block 4a  x --> dense_real --> y_real;    y_real --> sigmoid_real --> y_real 
         # 1. use the dense_real layer to apply a dense NN layer that learns the combinations of elements in x that are predictive of authenticity. Store the result in y_real.
@@ -499,8 +523,6 @@ class MultiTaskDiscriminator(Discriminator):
         y_class = self.dense_class(x)
         y_class = self.softmax_class(y_class)
         
-
-
         if return_features:
             return y_real, y_class, x
         else:
@@ -516,55 +538,48 @@ class ConditionalGAN(GAN):
     def __init__(self, 
                  n_classes=10,
                  cond_loss_weight=1.,
+                 generator_params = {},
+                 discriminator_params = {},
                  name='cgan', 
                  **kwargs):
         """Generative adversarial network containing a generator to synthesize 
         images and an adversary to to discriminate between real and fake images.
 
         Args:
-            n_latent_dims (int, optional): Size of latent representation.
-                Defaults to 8. 
             n_classes (int, optional): Number of classes. Defaults to 10. 
-            image_shape (tuple, optional): Image shape. Defaults
-                to (32, 32, 1). 
             cond_loss_weight (float, optional): Weight of conditional loss for 
                 generator. Defaults to 1.
-            generator_lr (float, optional): Adam learning rate for generator. 
-                Defaults to 0.0001.
-            discriminator_lr (float, optional): Adam learning rate for discriminator. 
-                Defaults to 0.00001.
-            name (str, optional): Model name. Defaults to 'gan'.
-        """        
+            name (str, optional): Model name. Defaults to 'cgan'.
+        """          
         
         # ToImplement Exercise6a_part1 ==
         # ===============================
-        super().__init__(name=name, **kwargs)
+        super().__init__(name=name, generator_params=generator_params, **kwargs)
 
         self.n_classes = n_classes
         self.cond_loss_weight = cond_loss_weight
         
-        self.discriminator = MultiTaskDiscriminator(n_classes)
+        self.discriminator = MultiTaskDiscriminator(n_classes, **discriminator_params)
         
         # Categorical cross-entropy loss for discriminator classification
-        #==>  complete this line of code         
-        self.loss_cce = tf.keras.losses.CategoricalCrossentropy(name="loss_cce")
-
+        self.loss_class = tf.keras.losses.CategoricalCrossentropy(name='class_cce')
+        
         # Classification accuracy 
-        #==>  complete this line of code         
-        self.metric_class = tf.keras.metrics.Mean(name="ce_accuracy")
+        self.metric_class = tf.keras.metrics.TopKCategoricalAccuracy(k=1, name='top_1_acc')
      
         print(f"Loaded version: {__name__}")
-
 
     def call(self, inputs, training=None):
         # ToImplement Exercise6a_part2 ==
         # ===============================
-        #==>  complete this method , roughly 5 to 7 lines of code
-        _, class_real = inputs
-        n = tf.shape(class_real)[0]
-        z = tf.random.normal((n, self.n_latent_dims))
-        z = tf.concat((z, class_real), 1)
-        return self.generator(z, training=training)
+
+        _, classes = inputs
+        n_samples = tf.shape(classes)[0]
+        z_random = tf.random.normal((n_samples, self.n_latent_dims))
+        z_random_conditional = tf.concat([z_random, classes], axis=1)
+        images_fake = self.generator(z_random_conditional, training=training)
+        
+        return images_fake
         
     @property
     def metrics(self):
@@ -585,59 +600,55 @@ class ConditionalGAN(GAN):
         return class_random
     
     def train_step(self, data):
-        # """Defines a single training iteration, including the forward pass,
-        # computation of losses, backpropagation, and weight updates.
+        """Defines a single training iteration, including the forward pass,
+        computation of losses, backpropagation, and weight updates.
 
-        # Args:
-        #     data (tensor): Input images.
+        Args:
+            data (tensor): Input images.
 
-        # Returns:
-        #     dict: Loss values.
-        # """        
+        Returns:
+            dict: Loss values.
+        """        
         images_real, class_real = data[0]
 
         # ToImplement Exercise6a_part3 ==
         # ===============================        
-        #==>  complete this method, you can uncomment the ## lines above and below as hints
         # Step 1: Train the discriminator
 
         # Generate images from random latent vectors.
-        n = tf.shape(images_real)[0]
-        class_rand = self.generate_random_classes(n)
-        z = tf.random.normal((n, self.n_latent_dims))
-        z = tf.concat((z, class_rand), 1)
-        images_fake = self.generator(z, training=False)
-
-
+        n_samples = tf.shape(images_real)[0]
+        z_random = tf.random.normal((n_samples, self.n_latent_dims))
+        class_random = self.generate_random_classes(n_samples)
+        z_random_conditional = tf.concat([z_random, class_random], axis=1)
+        images_fake = self.generator(z_random_conditional, training=False)
+        
         # Create label vectors, 1 for real and 0 for fake images
-        labels_real = tf.ones(n)
-        labels_fake = tf.zeros(n)
+        labels_real = tf.ones((n_samples, 1))
+        labels_fake = tf.zeros((n_samples, 1))
 
         # Concatenate real and fake images 
-        images_disc = tf.concat((images_real, images_fake), 0)
-        labels_disc = tf.concat((labels_real, labels_fake), 0)
-
+        images_disc = tf.concat([images_real, images_fake], axis=0)
+        labels_disc = tf.concat([labels_real, labels_fake], axis=0)
+       
         with tf.GradientTape() as gt:
             # Predict with the discriminator
-            labels_pred,class_pred = self.discriminator(images_disc, training=True)
+            labels_pred, class_pred = self.discriminator(images_disc, training=True)
             
             # Compute discriminator loss for distinguishing real/fake images
-            disc_loss_im = self.loss_bce(labels_disc, labels_pred)
-
+            disc_loss_adv = self.loss_bce(labels_disc, labels_pred)
             # Compute discriminator loss for predicting image class, for real images only
-            disc_loss_cl = self.loss_cce(class_real, class_pred[:n,:])
-
+            disc_loss_class = self.loss_class(class_real, class_pred[:n_samples, :])
             # Add losses
-            disc_loss = disc_loss_im + disc_loss_cl
+            disc_loss = disc_loss_adv + disc_loss_class
             
             # Compute classification metric
-            self.metric_class.update_state(disc_loss_cl)
-
+            self.metric_class.update_state(class_real, class_pred[:n_samples, :])
+                                   
         # Compute the gradient of the lost wrt the discriminator weights
-        grads_disc = gt.gradient(disc_loss, self.discriminator.trainable_variables)
+        grads_disc = gt.gradient(disc_loss, self.discriminator.trainable_weights)
         
         # Apply the weight updates
-        self.optimizer_disc.apply_gradients(zip(grads_disc, self.discriminator.trainable_variables))
+        self.optimizer_disc.apply_gradients(zip(grads_disc, self.discriminator.trainable_weights))           
         
         # Step 2: Train the generator
                     
@@ -645,37 +656,29 @@ class ConditionalGAN(GAN):
             # Generate images from random latent vectors. Generate twice as many
             # images as the batch size so that the generator sees as many
             # samples as the discriminator did. 
-            n *= 2
-            class_gen = self.generate_random_classes(n)
-            z = tf.random.normal((n, self.n_latent_dims))
-            z = tf.concat((z, class_gen), -1)
-            images_fake = self.generator(z, training=True)
-
+            z_random = tf.random.normal((n_samples * 2, self.n_latent_dims))
+            class_random = self.generate_random_classes(n_samples * 2)
+            z_random_conditional = tf.concat([z_random, class_random], axis=1)
+            images_fake = self.generator(z_random_conditional, training=False)
+                                    
             # Predict with the discriminator
-            labels_pred,class_pred = self.discriminator(images_fake, training=False)
+            labels_pred, class_pred = self.discriminator(images_fake, training=False)
             
             # We want to the discriminator to think these images are real, so we
             # calculate the loss between these predictions and the "real image"
             # labels
-            labels_gen = tf.ones(n)
-            gen_loss = self.loss_bce(labels_gen, labels_pred)
-
+            labels_gen = tf.ones((2 * n_samples, 1))
+            gen_loss_adv = self.loss_bce(labels_gen, labels_pred)
             # Compute loss between discriminator-predicted classes and the desired classes
-            print(tf.shape(labels_pred))
-            print(tf.shape(class_pred))
-            print(tf.shape(class_gen))
-            #class_pred = tf.ensure_shape(class_pred, tf.shape(class_gen))
-            class_loss = self.loss_cce(class_gen, class_pred)
-
+            gen_loss_class = self.loss_class(class_random, class_pred)
             # Add losses
-            gen_loss = gen_loss + self.cond_loss_weight * class_loss
-
+            gen_loss = gen_loss_adv + self.cond_loss_weight * gen_loss_class
                         
         # Compute the gradient of the lost wrt the generator weights
-        grads_gen = gt2.gradient(gen_loss, self.generator.trainable_variables)
+        grads_gen = gt2.gradient(gen_loss, self.generator.trainable_weights)
         
         # Apply the weight updates
-        self.optimizer_gen.apply_gradients(zip(grads_gen, self.generator.trainable_variables))
+        self.optimizer_gen.apply_gradients(zip(grads_gen, self.generator.trainable_weights))                
         
         # Update the running means of the losses
         self.loss_gen_tracker.update_state(gen_loss)
@@ -683,7 +686,6 @@ class ConditionalGAN(GAN):
         
         # Get the current values of these running means as a dict. These values
         # will be printed in the progress bar.
-
         dictLosses = {loss.name: loss.result() for loss in self.metrics}
         return dictLosses
 
