@@ -575,6 +575,7 @@ class ConditionalGAN(GAN):
                 self.loss_disc_tracker,
                 self.metric_class]
     
+    @tf.function
     def generate_random_classes(self, n_samples):
         # Generate random class labels from uniform distribution
         class_probs = tf.ones((1, self.n_classes))
@@ -661,10 +662,7 @@ class ConditionalGAN(GAN):
             gen_loss = self.loss_bce(labels_gen, labels_pred)
 
             # Compute loss between discriminator-predicted classes and the desired classes
-            print(tf.shape(labels_pred))
-            print(tf.shape(class_pred))
-            print(tf.shape(class_gen))
-            #class_pred = tf.ensure_shape(class_pred, tf.shape(class_gen))
+            class_gen = tf.ensure_shape(class_gen, [None, self.n_classes])
             class_loss = self.loss_cce(class_gen, class_pred)
 
             # Add losses

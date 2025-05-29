@@ -377,11 +377,11 @@ class GAN(tf.keras.Model):
                                    
         # 8. NOT indented: Compute the gradient of the lost wrt the discriminator weights
         #  in a new variable, grads_disc store the gradients of disc_loss with respect to the discriminator's trainable weights  
-        grads_disc = gt.gradient(disc_loss, self.discriminator.trainable_weights)
+        grads_disc = gt.gradient(disc_loss, self.discriminator.trainable_variables)
         
         # 9. Apply the weight updates
         #    use self.optimizer_disc to apply the weight updates. Hint: use zip
-        self.optimizer_disc.apply_gradients(zip(grads_disc, self.discriminator.trainable_weights))           
+        self.optimizer_disc.apply_gradients(zip(grads_disc, self.discriminator.trainable_variables))           
         
         # Part 2: Train the generator
         # 10. start a GraidentTape with default arguments. Use a different tape context variable than used above.           
@@ -406,11 +406,11 @@ class GAN(tf.keras.Model):
             
         # 14. NOT indented: compute the gradient of the lost wrt the generator weights
         #  in a new variable, grads_gen store the gradients of gen_loss with respect to the generator's trainable weights         
-        grads_gen = gt2.gradient(gen_loss, self.generator.trainable_weights)
+        grads_gen = gt2.gradient(gen_loss, self.generator.trainable_variables)
         
         # 15. Apply the weight updates
         #    use self.optimizer_gen to apply the weight updates. 
-        self.optimizer_gen.apply_gradients(zip(grads_gen, self.generator.trainable_weights))                
+        self.optimizer_gen.apply_gradients(zip(grads_gen, self.generator.trainable_variables))                
         
         # 16. Update the running means of the losses including loss_gen_tracker and loss_disc_tracker
         self.loss_gen_tracker.update_state(gen_loss)
@@ -645,10 +645,10 @@ class ConditionalGAN(GAN):
             self.metric_class.update_state(class_real, class_pred[:n_samples, :])
                                    
         # Compute the gradient of the lost wrt the discriminator weights
-        grads_disc = gt.gradient(disc_loss, self.discriminator.trainable_weights)
+        grads_disc = gt.gradient(disc_loss, self.discriminator.trainable_variables)
         
         # Apply the weight updates
-        self.optimizer_disc.apply_gradients(zip(grads_disc, self.discriminator.trainable_weights))           
+        self.optimizer_disc.apply_gradients(zip(grads_disc, self.discriminator.trainable_variables))           
         
         # Step 2: Train the generator
                     
@@ -670,15 +670,16 @@ class ConditionalGAN(GAN):
             labels_gen = tf.ones((2 * n_samples, 1))
             gen_loss_adv = self.loss_bce(labels_gen, labels_pred)
             # Compute loss between discriminator-predicted classes and the desired classes
+            class_random = tf.ensure_shape(class_random, [None, self.n_classes])
             gen_loss_class = self.loss_class(class_random, class_pred)
             # Add losses
             gen_loss = gen_loss_adv + self.cond_loss_weight * gen_loss_class
                         
         # Compute the gradient of the lost wrt the generator weights
-        grads_gen = gt2.gradient(gen_loss, self.generator.trainable_weights)
+        grads_gen = gt2.gradient(gen_loss, self.generator.trainable_variables)
         
         # Apply the weight updates
-        self.optimizer_gen.apply_gradients(zip(grads_gen, self.generator.trainable_weights))                
+        self.optimizer_gen.apply_gradients(zip(grads_gen, self.generator.trainable_variables))                
         
         # Update the running means of the losses
         self.loss_gen_tracker.update_state(gen_loss)
