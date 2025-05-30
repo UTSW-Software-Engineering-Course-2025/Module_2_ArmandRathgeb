@@ -303,6 +303,17 @@ class ConditionalVAECGAN(ConditionalVAEGAN):
                 self.loss_disc_tracker,
                 self.metric_class]
     
+    def test_step(self, data):
+        images_real,class_real = data[0]
+        recons = self(data[0], training=False)
+
+        recon_loss = tf.reduce_sum(self.loss_recon(images_real, recons),axis=(1,2))
+        recon_loss = tf.reduce_mean(recon_loss)
+        self.loss_recon_tracker.update_state(recon_loss)
+
+        return {self.loss_recon_tracker.name: self.loss_recon_tracker.result()}
+
+    
     def train_step(self, data):
         """Defines a single training iteration, including the forward pass,
         computation of losses, backpropagation, and weight updates.
